@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuantGemini Ultra v8.0 - 终极网格布局</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18.2.0/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/prop-types/prop-types.min.js"></script>
+    <script src="https://unpkg.com/recharts@2.10.3/umd/Recharts.js"></script>
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        /* 全局锁定 */
+        html, body, #root {
+            height: 100%;
+            width: 100%;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #0b1221;
+            color: #e2e8f0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        /* 核心网格布局系统 */
+        .app-grid {
+            display: grid;
+            grid-template-columns: 260px 1fr; /* 左侧固定260px，右侧自适应 */
+            grid-template-rows: 60px 1fr;     /* 顶部Header 60px，下方内容自适应 */
+            height: 100vh;
+            width: 100vw;
+        }
+
+        .grid-header { grid-column: 1 / -1; grid-row: 1; } /* Header 跨越整行 */
+        .grid-sidebar { grid-column: 1; grid-row: 2; overflow: hidden; display: flex; flex-direction: column; } /* 左侧 */
+        
+        /* 右侧内容区：再次划分为上下两个网格 */
+        .grid-content { 
+            grid-column: 2; 
+            grid-row: 2; 
+            display: grid;
+            grid-template-rows: 65% 35%; /* K线图 65%，AI聊天 35% - 严格物理隔离 */
+            height: 100%;
+            overflow: hidden;
+            border-left: 1px solid #1e293b;
+        }
+
+        .chart-area { grid-row: 1; position: relative; overflow: hidden; }
+        .ai-area { grid-row: 2; display: flex; flex-direction: column; overflow: hidden; border-top: 4px solid #0f172a; }
+
+        .animate-in { animation: fadeIn 0.3s ease-out forwards; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
+        .modal-backdrop { background-color: rgba(0, 0, 0, 0.8); backdrop-filter: blur(4px); }
+        
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; height: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #0b1221; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
+        
+        .floating-legend {
+            position: absolute; left: 12px; top: 12px; z-index: 20;
+            font-size: 11px; font-family: 'Roboto Mono', monospace; color: #94a3b8;
+            pointer-events: none; display: flex; gap: 12px;
+            background: rgba(11, 18, 33, 0.8); padding: 4px 8px; border-radius: 4px;
+            border: 1px solid rgba(51, 65, 85, 0.5); backdrop-filter: blur(2px);
+        }
+        .legend-item span:first-child { color: #64748b; margin-right: 4px; }
+        .text-up { color: #089981; } .text-down { color: #f23645; }
+
+        .msg-user { background-color: #2563eb; color: white; border-radius: 12px 12px 0 12px; margin-left: auto; }
+        .msg-ai { background-color: #1e293b; color: #e2e8f0; border-radius: 12px 12px 12px 0; border: 1px solid #334155; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+        // --- Icons ---
+        const CreateIcon = ({ children, size = 18, className = "", ...props }) => (<svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} {...props}>{children}</svg>);
+        const Icons = {
+            Brain: (p) => <CreateIcon {...p}><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/></CreateIcon>,
+            Activity: (p) => <CreateIcon {...p}><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></CreateIcon>,
+            RefreshCw: (p) => <CreateIcon {...p}><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></CreateIcon>,
+            Settings: (p) => <CreateIcon {...p}><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.72l-.15.1a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.72v-.51a2 2 0 0 1 1-1.72l.15-.1a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></CreateIcon>,
+            Plus: (p) => <CreateIcon {...p}><path d="M5 12h14"/><path d="M12 5v14"/></CreateIcon>,
+            Trash2: (p) => <CreateIcon {...p}><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></CreateIcon>,
+            Globe: (p) => <CreateIcon {...p}><circle cx="12" cy="12" r="10"/><line x1="2" x2="22" y1="12" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></CreateIcon>,
+            Server: (p) => <CreateIcon {...p}><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></CreateIcon>,
+            Zap: (p) => <CreateIcon {...p}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></CreateIcon>,
+            AlertCircle: (p) => <CreateIcon {...p}><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></CreateIcon>,
+            RotateCcw: (p) => <CreateIcon {...p}><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></CreateIcon>,
+            Eraser: (p) => <CreateIcon {...p}><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></CreateIcon>,
+            Download: (p) => <CreateIcon {...p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></CreateIcon>,
+            Send: (p) => <CreateIcon {...p}><line x1="22" x2="11" y1="2" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></CreateIcon>,
+            TrendingUp: (p) => <CreateIcon {...p}><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></CreateIcon>,
+            TrendingDown: (p) => <CreateIcon {...p}><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></CreateIcon>,
+        };
+
+        const THEME = {
+            bg: 'bg-[#0b1221]', card: 'bg-[#131c31]', text: 'text-slate-100', textDim: 'text-slate-400',
+            upColor: '#089981', downColor: '#f23645', 
+            upText: 'text-[#089981]', downText: 'text-[#f23645]',
+        };
+
+        const INITIAL_STOCKS = [
+            { symbol: 'BTCUSDT', name: 'Bitcoin', type: 'CRYPTO' },
+            { symbol: 'AAPL', name: 'Apple Inc.', type: 'STOCK' },
+            { symbol: 'NVDA', name: 'NVIDIA', type: 'STOCK' },
+        ];
+        const DEFAULT_SETTINGS = { gemini: '', deepseek: '', alpha: '', finnhub: '', t212: '', deepseekEndpoint: 'http://localhost:11434', deepseekModel: 'deepseek-r1:14b' };
+        const TIMEFRAMES = [
+            { label: '1m', value: '1m', yahooInt: '1m', yahooRange: '1d', avInt: '1min' },
+            { label: '5m', value: '5m', yahooInt: '5m', yahooRange: '5d', avInt: '5min' },
+            { label: '15m', value: '15m', yahooInt: '15m', yahooRange: '5d', avInt: '15min' },
+            { label: '30m', value: '30m', yahooInt: '30m', yahooRange: '5d', avInt: '30min' },
+            { label: '1H', value: '1h', yahooInt: '60m', yahooRange: '1mo', avInt: '60min' },
+            { label: '4H', value: '4h', yahooInt: '60m', yahooRange: '3mo', avInt: '60min' }, 
+            { label: '1D', value: '1d', yahooInt: '1d', yahooRange: '1y', avInt: 'Daily' },
+            { label: '1W', value: '1w', yahooInt: '1wk', yahooRange: '2y', avInt: 'Weekly' },
+            { label: '1M', value: '1M', yahooInt: '1mo', yahooRange: '5y', avInt: 'Monthly' },
+            { label: 'ALL', value: 'all', yahooInt: '1mo', yahooRange: 'max', avInt: 'Monthly' },
+        ];
+
+        // Worker calculates ALL Indicators
+        const WORKER_CODE = `
+            self.onmessage=(e)=>{const{type,data}=e.data;if(type==='CALC'&&Array.isArray(data)){
+                const rsi=calcRSI(data,14);
+                const sma20=calcSMA(data,20);
+                const ema50=calcEMA(data,50);
+                const bb=calcBB(data,20,2);
+                const macd=calcMACD(data,12,26,9);
+                const atr=calcATR(data, 14);
+                self.postMessage({rsi,sma20,ema50,bb,macd,atr});
+            }};
+            function calcSMA(data,w){if(!data||data.length<w)return null;const s=data.slice(data.length-w).reduce((a,v)=>a+v.close,0);return s/w}
+            function calcEMA(data,w){if(!data||data.length<w)return null;const k=2/(w+1);let ema=data[0].close;for(let i=1;i<data.length;i++){ema=data[i].close*k+ema*(1-k);}return ema;}
+            function calcRSI(data,p){if(!data||data.length<p+1)return 50;let g=0,l=0;for(let i=data.length-p;i<data.length;i++){const c=data[i].close-data[i-1].close;if(c>=0)g+=c;else l+=Math.abs(c)}return l===0?100:100-(100/(1+g/l))}
+            function calcBB(data,w,mult){if(!data||data.length<w)return null;const slice=data.slice(data.length-w);const mean=slice.reduce((a,v)=>a+v.close,0)/w;const sd=Math.sqrt(slice.reduce((a,v)=>a+Math.pow(v.close-mean,2),0)/w);return{upper:mean+(mult*sd),lower:mean-(mult*sd),basis:mean}}
+            function getEMA(data, period) {
+                const k = 2 / (period + 1);
+                let ema = data[0].close;
+                const results = [{ time: data[0].time, value: ema }];
+                for (let i = 1; i < data.length; i++) {
+                    ema = data[i].close * k + ema * (1 - k);
+                    results.push({ time: data[i].time, value: ema });
+                }
+                return results;
+            }
+            function calcMACD(data, fast=12, slow=26, signal=9) {
+                if (data.length < slow) return null;
+                const getSingleEMA = (arr, p) => { const k = 2 / (p + 1); let ema = arr[0].close; for (let i = 1; i < arr.length; i++) ema = arr[i].close * k + ema * (1 - k); return ema; };
+                const ema12 = getSingleEMA(data.slice(data.length - fast), fast);
+                const ema26 = getSingleEMA(data.slice(data.length - slow), slow);
+                return ema12 - ema26;
+            }
+            function calcATR(data, p) {
+                if (data.length < p) return 0;
+                let trSum = 0;
+                for (let i = data.length - p; i < data.length; i++) {
+                    const h = data[i].high;
+                    const l = data[i].low;
+                    const c_prev = (i > 0) ? data[i-1].close : data[i].close;
+                    const tr = Math.max(h - l, Math.abs(h - c_prev), Math.abs(l - c_prev));
+                    trSum += tr;
+                }
+                return trSum / p;
+            }
+        `;
+        
+        const useQuantWorker = () => { const worker=useRef(null); useEffect(()=>{const b=new Blob([WORKER_CODE],{type:'application/javascript'});worker.current=new Worker(URL.createObjectURL(b));worker.current.onmessage=(e)=>window.dispatchEvent(new CustomEvent('quant-update',{detail:e.data}));return()=>worker.current.terminate()},[]); return {calculate:(d)=>worker.current?.postMessage({type:'CALC',data:d})}};
+
+        // Chart Component with ResizeObserver
+        const TradingChart = ({ data, showSMA, showEMA, showBB }) => {
+            const container=useRef(); const chart=useRef(null); const series=useRef(null); const vol=useRef(null); 
+            const smaSeries=useRef(null); const emaSeries=useRef(null); const bbTop=useRef(null); const bbBot=useRef(null); 
+            const [legend, setLegend]=useState(null);
+
+            const debounce = (func, delay) => { let timeout; return function(...args) { const context = this; clearTimeout(timeout); timeout = setTimeout(() => func.apply(context, args), delay); }; };
+
+            useEffect(() => {
+                if (!container.current || !window.LightweightCharts) return;
+                const { createChart, CrosshairMode } = window.LightweightCharts;
+                
+                chart.current = createChart(container.current, {
+                    layout: { background: { type: 'solid', color: '#0b1221' }, textColor: '#64748b' },
+                    grid: { vertLines: { color: '#1e293b' }, horzLines: { color: '#1e293b' } },
+                    width: container.current.clientWidth, height: container.current.clientHeight,
+                    timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#334155' },
+                    rightPriceScale: { borderColor: '#334155', scaleMargins: { top: 0.1, bottom: 0.2 } }, crosshair: { mode: CrosshairMode.Normal },
+                });
+
+                series.current = chart.current.addCandlestickSeries({ upColor: '#089981', downColor: '#f23645', borderVisible: false, wickUpColor: '#089981', wickDownColor: '#f23645' });
+                vol.current = chart.current.addHistogramSeries({ color: '#26a69a', priceFormat: { type: 'volume' }, priceScaleId: '' });
+                vol.current.priceScale().applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
+                
+                smaSeries.current = chart.current.addLineSeries({ color: '#2962FF', lineWidth: 2, visible: false, priceScaleId: 'right' });
+                emaSeries.current = chart.current.addLineSeries({ color: '#FF6D00', lineWidth: 2, visible: false, priceScaleId: 'right' });
+                bbTop.current = chart.current.addLineSeries({ color: 'rgba(41, 98, 255, 0.5)', lineWidth: 1, visible: false, priceScaleId: 'right' });
+                bbBot.current = chart.current.addLineSeries({ color: 'rgba(41, 98, 255, 0.5)', lineWidth: 1, visible: false, priceScaleId: 'right' });
+
+                chart.current.subscribeCrosshairMove(p => { if (p.time) { const pr = p.seriesData.get(series.current); const v = p.seriesData.get(vol.current); if (pr) setLegend({ ...pr, volume: v?.value }); } else { setLegend(data[data.length - 1]); } });
+                
+                // ResizeObserver with Debounce
+                const debouncedResize = debounce(() => {
+                    if (container.current && chart.current) {
+                        const { clientWidth, clientHeight } = container.current;
+                        // 只有当尺寸有实质变化时才重绘
+                        if (clientWidth > 0 && clientHeight > 0) {
+                             chart.current.applyOptions({ width: clientWidth, height: clientHeight });
+                             chart.current.timeScale().fitContent();
+                        }
+                    }
+                }, 100);
+
+                const resizeObserver = new ResizeObserver(debouncedResize);
+                resizeObserver.observe(container.current);
+
+                return () => { resizeObserver.disconnect(); chart.current.remove(); };
+            }, []);
+
+            // Data Update
+            useEffect(() => {
+                if (!chart.current || !data.length) return;
+                const d = [...data].sort((a,b)=>a.time-b.time);
+                series.current.setData(d.map(i=>({time:i.time/1000,open:i.open,high:i.high,low:i.low,close:i.close})));
+                vol.current.setData(d.map(i=>({time:i.time/1000,value:i.volume,color:i.close>=i.open?'rgba(8,153,129,0.3)':'rgba(242,54,69,0.3)'})));
+                
+                // Indicators calculation
+                const smaData = [], emaData = [], bbTopData = [], bbBotData = [];
+                const smaW = 20; const emaW = 50; const bbMult = 2;
+                let emaK = 2/(emaW+1); let emaPrev = d[0]?.close || 0; 
+
+                d.forEach((val, i, arr) => {
+                    const time = val.time/1000;
+                    if(i >= smaW-1) {
+                        const slice = arr.slice(i-smaW+1, i+1);
+                        const mean = slice.reduce((a,b)=>a+b.close,0)/smaW;
+                        const sd = Math.sqrt(slice.reduce((a,b)=>a+Math.pow(b.close-mean,2),0)/smaW);
+                        smaData.push({time, value: mean});
+                        bbTopData.push({time, value: mean + (bbMult*sd)});
+                        bbBotData.push({time, value: mean - (bbMult*sd)});
+                    }
+                    if (i === 0) emaData.push({time, value: emaPrev});
+                    else {
+                        emaPrev = val.close * emaK + emaPrev * (1 - emaK);
+                        if(i >= emaW) emaData.push({time, value: emaPrev});
+                    }
+                });
+
+                smaSeries.current.setData(smaData);
+                emaSeries.current.setData(emaData);
+                bbTop.current.setData(bbTopData);
+                bbBot.current.setData(bbBotData);
+                chart.current.timeScale().fitContent();
+                setLegend(data[data.length-1]);
+            }, [data]);
+
+            useEffect(() => { if(smaSeries.current) smaSeries.current.applyOptions({ visible: showSMA, color: '#2962FF' }); }, [showSMA]);
+            useEffect(() => { if(emaSeries.current) emaSeries.current.applyOptions({ visible: showEMA, color: '#FF6D00' }); }, [showEMA]);
+            useEffect(() => { if(bbTop.current) { bbTop.current.applyOptions({ visible: showBB, color: 'rgba(41, 98, 255, 0.5)' }); bbBot.current.applyOptions({ visible: showBB, color: 'rgba(41, 98, 255, 0.5)' }); } }, [showBB]);
+            
+            useEffect(() => {
+                window.takeScreenshot = () => {
+                    const canvas = container.current.querySelector('canvas');
+                    if(canvas) {
+                        const link = document.createElement('a');
+                        link.download = 'chart.png';
+                        link.href = canvas.toDataURL();
+                        link.click();
+                    }
+                }
+            }, []);
+
+            return <div className="w-full h-full relative"><div ref={container} className="w-full h-full"/>{legend && <div className="floating-legend"><div className="legend-item"><span>O</span><span className={legend.close>=legend.open?'text-up':'text-down'}>{legend.open?.toFixed(2)}</span></div><div className="legend-item"><span>H</span><span className={legend.close>=legend.open?'text-up':'text-down'}>{legend.high?.toFixed(2)}</span></div><div className="legend-item"><span>L</span><span className={legend.close>=legend.open?'text-up':'text-down'}>{legend.low?.toFixed(2)}</span></div><div className="legend-item"><span>C</span><span className={legend.close>=legend.open?'text-up':'text-down'}>{legend.close?.toFixed(2)}</span></div><div className="legend-item"><span>V</span><span className="text-slate-400">{legend.volume?(legend.volume/1000).toFixed(1)+'K':'-'}</span></div><div className="legend-item"><span className={legend.close>=legend.open?'text-up':'text-down'}>{((legend.close - legend.open) / legend.open * 100).toFixed(2)}%</span></div></div>}</div>;
+        };
+
+        const fetchBinance=async(s,i)=>{let S=s.toUpperCase().replace(/[^A-Z0-9]/g,'');if(!S.includes('USDT'))S+='USDT';const m={'1m':'1m','5m':'5m','15m':'15m','30m':'30m','1h':'1h','4h':'4h','1d':'1d','1w':'1w','1M':'1M','all':'1M'};const u=`https://api.binance.com/api/v3/klines?symbol=${S}&interval=${m[i]||'1h'}&limit=1000`;const p=(r)=>r.map(d=>({time:d[0],open:parseFloat(d[1]),high:parseFloat(d[2]),low:parseFloat(d[3]),close:parseFloat(d[4]),volume:parseFloat(d[5])}));try{const r=await fetch(u);if(r.ok)return p(await r.json())}catch(e){}const px='https://api.allorigins.win/raw?url=';const rp=await fetch(`${px}${encodeURIComponent(u)}`);if(!rp.ok)throw new Error('Binance Err');return p(await rp.json())};
+        const fetchYahoo=async(s,tf)=>{const px=['https://api.allorigins.win/raw?url=','https://corsproxy.io/?'];const t=encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${s}?range=${tf.yahooRange}&interval=${tf.yahooInt}`);for(const p of px){try{const r=await fetch(`${p}${t}`);if(r.ok){const j=await r.json();const R=j.chart?.result?.[0];if(R&&R.timestamp){const q=R.indicators.quote[0];return R.timestamp.map((tm,i)=>({time:tm*1000,open:q.open[i],high:q.high[i],low:q.low[i],close:q.close[i],volume:q.volume[i]})).filter(d=>d.close!=null)}}}catch(e){}}throw new Error('Proxy Err')};
+        const fetchAlphaVantage=async(s,t,k)=>{if(!k)throw new Error('No Key');let f=t.avInt==='Daily'?'TIME_SERIES_DAILY':t.avInt==='Weekly'?'TIME_SERIES_WEEKLY':t.avInt==='Monthly'?'TIME_SERIES_MONTHLY':'TIME_SERIES_INTRADAY';let u=`https://www.alphavantage.co/query?function=${f}&symbol=${s}&apikey=${k}`;if(f.includes('INTRADAY'))u+=`&interval=${t.avInt}`;const r=await fetch(u);const j=await r.json();const S=j[`Time Series (${t.avInt})`]||j['Time Series (Daily)']||j['Weekly Time Series']||j['Monthly Time Series'];if(!S)throw new Error('AV Err');return Object.entries(S).slice(0,200).reverse().map(([tm,v])=>({time:new Date(tm).getTime(),open:parseFloat(v['1. open']),high:parseFloat(v['2. high']),low:parseFloat(v['3. low']),close:parseFloat(v['4. close']),volume:parseFloat(v['5. volume'])}))};
+
+        const ImportModal = ({ isOpen, onClose, onImport }) => {
+            const [textInput, setTextInput] = useState(''); 
+            if (!isOpen) return null;
+            const handleTextImport = () => { const lines = textInput.split(/[\n,;]+/).map(s => s.trim()).filter(s => s); if (lines.length > 0) { onImport(lines.map(s => ({ symbol: s.toUpperCase(), name: s.toUpperCase(), type: s.includes('USDT') ? 'CRYPTO' : 'STOCK' }))); onClose(); }};
+            return ( <div className="fixed inset-0 modal-backdrop flex items-center justify-center z-50 p-4"> <div className="bg-[#131c31] border border-slate-700 rounded-xl w-full max-w-md shadow-2xl animate-in"> <div className="p-4 border-b border-slate-800 flex justify-between items-center"> <h3 className="font-bold text-white flex items-center gap-2"><Icons.Download size={18}/> 导入持仓</h3> <button onClick={onClose} className="text-slate-400 hover:text-white"><Icons.Trash2 size={18} className="rotate-45"/></button> </div> <div className="p-6"> <div className="space-y-4"> <p className="text-xs text-slate-400">请粘贴代码 (逗号或换行分隔):</p> <textarea value={textInput} onChange={e=>setTextInput(e.target.value)} className="w-full h-32 bg-[#0b1221] border border-slate-600 rounded p-2 text-sm text-white font-mono" placeholder="AAPL, TSLA, BTCUSDT..." /> <button onClick={handleTextImport} className="w-full py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded text-sm font-bold">导入</button> </div> </div> </div> </div> );
+        };
+
+        function QuantPlatform() {
+            const [stocks, setStocks] = useState(() => JSON.parse(localStorage.getItem('quant_stocks')) || INITIAL_STOCKS);
+            const [settings, setSettings] = useState(() => ({ gemini: '', deepseek: '', alpha: '', deepseekEndpoint: 'http://localhost:11434', deepseekModel: 'deepseek-r1:14b', ...JSON.parse(localStorage.getItem('quant_settings') || '{}') }));
+            const [selected, setSelected] = useState(stocks[0]);
+            const [tf, setTf] = useState(TIMEFRAMES[1]);
+            const [fullData, setFullData] = useState([]);
+            const [loading, setLoading] = useState(false);
+            const [error, setError] = useState(null);
+            const [source, setSource] = useState('');
+            const [indicators, setIndicators] = useState({ rsi: 0, sma20: 0, ema50: 0, bb: null, macd: 0, atr: 0 });
+            const [showSettings, setShowSettings] = useState(false);
+            const [showImport, setShowImport] = useState(false);
+            const [aiModel, setAiModel] = useState('gemini'); 
+            const [adding, setAdding] = useState(false);
+            const [newSym, setNewSym] = useState('');
+            const [newType, setNewType] = useState('STOCK');
+            const [showSMA, setShowSMA] = useState(true);
+            const [showEMA, setShowEMA] = useState(false);
+            const [showBB, setShowBB] = useState(false);
+            const [messages, setMessages] = useState([]);
+            const [userInput, setUserInput] = useState('');
+            const [isChatting, setIsChatting] = useState(false);
+            const { calculate } = useQuantWorker();
+            const chatEndRef = useRef(null);
+
+            useEffect(() => { localStorage.setItem('quant_stocks', JSON.stringify(stocks)); }, [stocks]);
+            useEffect(() => { localStorage.setItem('quant_settings', JSON.stringify(settings)); }, [settings]);
+            
+            useEffect(() => { 
+                const handler = (e) => {
+                    const data = e.detail;
+                    if (data) {
+                        setIndicators({
+                            rsi: data.rsi || 0, 
+                            sma20: data.sma20 || 0,
+                            ema50: data.ema50 || 0,
+                            bb: data.bb,
+                            macd: data.macd || 0,
+                            atr: data.atr || 0,
+                        });
+                    }
+                };
+                window.addEventListener('quant-update', handler); 
+                return () => window.removeEventListener('quant-update', handler); 
+            }, []);
+            
+            useEffect(() => { if (fullData.length) calculate(fullData); }, [fullData]);
+            useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+
+            const loadData = async () => {
+                setLoading(true); setError(null);
+                try {
+                    let d = []; let s = '';
+                    if (selected.type === 'CRYPTO') { d = await fetchBinance(selected.symbol, tf.value); s = 'Binance'; }
+                    else {
+                        if (settings.alpha) { try { d = await fetchAlphaVantage(selected.symbol, tf, settings.alpha); s = 'Alpha Vantage'; } catch (e) {} }
+                        if (!d || d.length === 0) { d = await fetchYahoo(selected.symbol, tf); s = 'Yahoo'; }
+                    }
+                    if (!d || d.length === 0) throw new Error("No Data");
+                    setFullData(d); setSource(s);
+                } catch (e) { setError(e.message); setSource('Error'); }
+                setLoading(false);
+            };
+            useEffect(() => { loadData(); }, [selected, tf]);
+
+            const callLLM = async (currentHistory) => {
+                const isLocal = settings.deepseekEndpoint.includes('localhost');
+                const key = aiModel === 'gemini' ? settings.gemini : (isLocal ? 'ollama' : settings.deepseek);
+                if (!key && aiModel === 'gemini') throw new Error('请输入 API Key');
+
+                if (aiModel === 'gemini') {
+                    const contents = currentHistory.map(m => ({ role: m.role === 'user' ? 'user' : 'model', parts: [{ text: m.content }] }));
+                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${settings.gemini}`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents })
+                    });
+                    const json = await res.json();
+                    if (json.error) throw new Error(json.error.message);
+                    return json.candidates?.[0]?.content?.parts?.[0]?.text;
+                } else {
+                    let ep = settings.deepseekEndpoint.replace(/\/+$/, '') + (isLocal ? '/v1' : '');
+                    const msgs = currentHistory.map(m => ({ role: m.role, content: m.content }));
+                    const res = await fetch(`${ep}/chat/completions`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+                        body: JSON.stringify({ model: settings.deepseekModel, messages: msgs, stream: false })
+                    });
+                    const json = await res.json();
+                    if (json.error) throw new Error(json.error.message);
+                    return json.choices?.[0]?.message?.content;
+                }
+            };
+
+            const generateStrategy = async () => {
+                if(isChatting) return;
+                setIsChatting(true); setMessages([]); 
+                const lastPrice = fullData[fullData.length-1].close;
+                
+                const prompt = `分析【${selected.symbol}】(${tf.label})。
+                当前数据快照：
+                - 价格: ${lastPrice.toFixed(2)}
+                - RSI (14): ${indicators.rsi?.toFixed(1) || 0}
+                - SMA (20): ${indicators.sma20?.toFixed(2) || 0}
+                - EMA (50): ${indicators.ema50?.toFixed(2) || 0}
+                - MACD: ${indicators.macd?.toFixed(3) || '中性'}
+                - ATR (14): ${indicators.atr?.toFixed(3) || '中性'}
+
+                请严格按照以下 Markdown 格式给出专业分析：
+
+                ## 📊 交易分析报告 (基于 ${tf.label} 周期)
+
+                **1. 市场情绪与趋势**：
+                * **核心趋势**：(看涨/看跌/震荡)。
+                * **动能信号**：MACD/RSI 给出 [金叉/死叉/中性] 信号。
+
+                **2. 关键点位与波动率**：
+                * **支撑位**：[价格] (基于 BB/EMA/关键低点估算)。
+                * **阻力位**：[价格] (基于 BB/关键高点估算)。
+                * **波动性**：当前 ATR 为 ${indicators.atr?.toFixed(3) || 'N/A'}，表明市场 [波动剧烈/平静]。
+
+                **3. 最终策略与风险管理**：
+                * **明确操作**：(明确给出：买入 / 卖出 / 观望)。
+                * **建议止损**：[价格] (基于 ATR 或关键支撑位)。
+                * **建议目标**：[价格]。
+                * **风险提示**：(例如：注意宏观经济风险或数据源延迟)。`;
+
+                const newHistory = [{ role: 'user', content: prompt }];
+                setMessages(newHistory);
+                try {
+                    const response = await callLLM(newHistory);
+                    setMessages(prev => [...prev, { role: 'assistant', content: response }]);
+                } catch (e) { setMessages(prev => [...prev, { role: 'assistant', content: `错误: ${e.message}` }]); }
+                setIsChatting(false);
+            };
+
+            const handleSend = async () => {
+                if(!userInput.trim() || isChatting) return;
+                const newUserMsg = { role: 'user', content: userInput };
+                const newHistory = [...messages, newUserMsg];
+                setMessages(newHistory); setUserInput(''); setIsChatting(true);
+                try {
+                    const response = await callLLM(newHistory);
+                    setMessages(prev => [...prev, { role: 'assistant', content: response }]);
+                } catch (e) { setMessages(prev => [...prev, { role: 'assistant', content: `错误: ${e.message}` }]); }
+                setIsChatting(false);
+            };
+
+            const handleKeyDown = (e) => { if (e.key === 'Enter') handleSend(); };
+            const clearChat = () => setMessages([]);
+            const cur = fullData.length ? fullData[fullData.length-1] : { close: 0 };
+            const prev = fullData.length > 1 ? fullData[fullData.length-2] : { close: 0 };
+            const chg = prev.close ? ((cur.close - prev.close)/prev.close)*100 : 0;
+            const high24 = fullData.length ? Math.max(...fullData.slice(-24).map(d=>d.high)) : 0;
+            const low24 = fullData.length ? Math.min(...fullData.slice(-24).map(d=>d.low)) : 0;
+            const addStock = (e) => { e.preventDefault(); if(!newSym)return; let s=newSym.toUpperCase(); if(newType==='CRYPTO'&&!s.includes('USDT'))s+='USDT'; if(newType==='STOCK'&&!s.includes('.')){if(/^\d{5}$/.test(s))s+='.HK';else if(/^60\d{4}$/.test(s))s+='.SS';} setStocks([...stocks,{symbol:s,name:s,type:newType}]); setAdding(false); setNewSym(''); };
+            const delStock = (sym) => { const l = stocks.filter(s=>s.symbol!==sym); if(l.length) setStocks(l); if(selected.symbol===sym) setSelected(l[0]||INITIAL_STOCKS[0]); };
+            const handleBatchImport = (items) => { const m = [...stocks]; items.forEach(i => { if(!m.find(s=>s.symbol===i.symbol)) m.push(i); }); setStocks(m); if(items.length) setSelected(items[0]); };
+
+            return (
+                <div className="app-grid">
+                    <ImportModal isOpen={showImport} onClose={()=>setShowImport(false)} onImport={handleBatchImport} />
+                    
+                    {/* Area 1: Header (Full Width) */}
+                    <header className="grid-header border-b border-slate-800 bg-[#0b1221] p-4 flex justify-between items-center z-50">
+                        <div className="flex items-center gap-4">
+                            <h1 className="font-bold text-xl tracking-tight text-white">{selected.symbol}</h1>
+                            <div><div className="flex items-baseline gap-2"><span className="text-2xl font-bold text-white">{cur.close?.toFixed(2)}</span><span className={`text-sm font-medium ${chg>=0?THEME.upText:THEME.downText}`}>{chg>0?'+':''}{chg.toFixed(2)}%</span></div></div>
+                            <div className="hidden md:flex gap-4 text-xs text-slate-500 ml-4"><div className="flex flex-col"><span className="text-[10px] uppercase">24h High</span><span className="text-slate-300 font-mono">{high24.toFixed(2)}</span></div><div className="flex flex-col"><span className="text-[10px] uppercase">24h Low</span><span className="text-slate-300 font-mono">{low24.toFixed(2)}</span></div><div className="flex flex-col"><span className="text-[10px] uppercase">24h Vol</span><span className="text-slate-300 font-mono">{(cur.volume/1000000).toFixed(2)}M</span></div></div>
+                        </div>
+                        <div className="flex items-center gap-2"><div className="flex bg-[#131c31] rounded p-1 gap-1 custom-scrollbar max-w-[300px] overflow-x-auto">{TIMEFRAMES.map(t=><button key={t.value} onClick={()=>setTf(t)} className={`px-2 py-1 text-[10px] rounded whitespace-nowrap transition-colors ${tf.value===t.value?'bg-slate-700 text-white':'text-slate-500 hover:text-slate-300'}`}>{t.label}</button>)}</div><button onClick={()=>setShowSettings(!showSettings)} className="p-2 rounded hover:bg-slate-800 text-slate-400"><Icons.Settings size={18}/></button></div>
+                    </header>
+                    {showSettings && <div className="p-4 border-b border-slate-800 bg-slate-800/50 absolute top-20 right-4 w-96 z-40 shadow-2xl rounded-xl animate-in"><div className="grid grid-cols-1 gap-3"><input type="password" placeholder="Gemini Key" value={settings.gemini} onChange={e=>setSettings({...settings, gemini:e.target.value})} className="bg-[#0b1221] border border-slate-700 rounded px-3 py-2 text-xs outline-none"/><input type="text" value={settings.deepseekEndpoint} onChange={e=>setSettings({...settings, deepseekEndpoint:e.target.value})} className="bg-[#0b1221] border border-slate-700 rounded px-3 py-2 text-xs outline-none"/><input type="text" value={settings.deepseekModel} onChange={e=>setSettings({...settings, deepseekModel:e.target.value})} className="bg-[#0b1221] border border-slate-700 rounded px-3 py-2 text-xs outline-none"/></div></div>}
+
+                    {/* Area 2: Sidebar (Left, Scrollable) */}
+                    <aside className="grid-sidebar bg-[#0b1221] border-r border-slate-800">
+                        <div className="p-2 border-b border-slate-800 flex justify-between items-center px-4 flex-shrink-0 h-10"><span className="text-xs font-bold text-slate-500">WATCHLIST</span><div className="flex gap-1"><button onClick={()=>setShowImport(true)} className="text-slate-400 hover:text-cyan-400"><Icons.Download size={14}/></button><button onClick={()=>setAdding(!adding)} className="text-cyan-400"><Icons.Plus size={14}/></button></div></div>
+                        {adding && <form onSubmit={addStock} className="p-2 bg-[#131c31] border-b border-slate-700 flex-shrink-0"><input className="w-full bg-[#0b1221] border border-slate-600 text-sm px-2 py-1 rounded mb-2 uppercase" placeholder="CODE" value={newSym} onChange={e=>setNewSym(e.target.value)} autoFocus /><div className="flex gap-1"><button type="button" onClick={()=>setNewType('STOCK')} className={`flex-1 text-[10px] py-1 border border-slate-600 ${newType==='STOCK'?'text-cyan-400 border-cyan-400':'text-slate-400'}`}>STOCK</button><button type="button" onClick={()=>setNewType('CRYPTO')} className={`flex-1 text-[10px] py-1 border border-slate-600 ${newType==='CRYPTO'?'text-yellow-400 border-yellow-400':'text-slate-400'}`}>CRYPTO</button></div><button className="w-full mt-2 bg-cyan-600 text-white text-xs py-1 rounded">ADD</button></form>}
+                        <div className="flex-1 overflow-y-auto custom-scrollbar">
+                            {stocks.map(s=><div key={s.symbol} onClick={()=>setSelected(s)} className={`p-3 border-b border-slate-800/50 cursor-pointer flex justify-between hover:bg-slate-800 ${selected.symbol===s.symbol?'bg-[#131c31] border-l-2 border-l-cyan-400':''}`}><div><div className="font-bold text-sm">{s.symbol}</div><div className="text-[10px] text-slate-500">{s.type}</div></div><button onClick={(e)=>{e.stopPropagation();delStock(s.symbol)}} className="text-slate-600 hover:text-red-400 p-2"><Icons.Trash2 size={14}/></button></div>)}
+                        </div>
+                        <div className="p-3 border-t border-slate-800 bg-[#0b1221] z-10 space-y-3 flex-shrink-0">
+                            <div className="flex justify-between items-center"><span className="text-xs text-slate-500">SMA (20)</span><button onClick={()=>setShowSMA(!showSMA)} className={`w-8 h-4 rounded-full transition-colors ${showSMA?'bg-blue-600':'bg-slate-700'} relative`}><div className={`w-3 h-3 bg-white rounded-full absolute top-0.5 transition-transform ${showSMA?'left-4.5':'left-0.5'}`}></div></button></div>
+                            <div className="flex justify-between items-center"><span className="text-xs text-slate-500">EMA (50)</span><button onClick={()=>setShowEMA(!showEMA)} className={`w-8 h-4 rounded-full transition-colors ${showEMA?'bg-orange-600':'bg-slate-700'} relative`}><div className={`w-3 h-3 bg-white rounded-full absolute top-0.5 transition-transform ${showEMA?'left-4.5':'left-0.5'}`}></div></button></div>
+                            <div className="flex justify-between items-center"><span className="text-xs text-slate-500">Bollinger</span><button onClick={()=>setShowBB(!showBB)} className={`w-8 h-4 rounded-full transition-colors ${showBB?'bg-blue-600':'bg-slate-700'} relative`}><div className={`w-3 h-3 bg-white rounded-full absolute top-0.5 transition-transform ${showBB?'left-4.5':'left-0.5'}`}></div></button></div>
+                            <div className="grid grid-cols-2 gap-2 text-[10px]"><div className="bg-[#131c31] rounded p-2 text-center"><span className="text-slate-500">RSI</span><div className="font-bold text-sm">{indicators.rsi.toFixed(1)}</div></div><div className="bg-[#131c31] rounded p-2 text-center"><span className="text-slate-500">MACD</span><div className="font-bold text-sm">{indicators.macd?.toFixed(3)||'-'}</div></div><div className="bg-[#131c31] rounded p-2 text-center"><span className="text-slate-500">SMA20</span><div className="font-bold text-sm">{indicators.sma20?.toFixed(2)||'-'}</div></div><div className="bg-[#131c31] rounded p-2 text-center"><span className="text-slate-500">ATR</span><div className="font-bold text-sm">{indicators.atr?.toFixed(3)||'-'}</div></div></div>
+                        </div>
+                    </aside>
+
+                    {/* Area 3: Main Content Grid (Chart + Chat) */}
+                    <div className="grid-content bg-[#0b1221]">
+                        
+                        {/* Chart Area: Top Row (No Scroll) */}
+                        <div className="chart-area border-b border-slate-800">
+                            {loading ? <div className="absolute inset-0 flex items-center justify-center"><Icons.RefreshCw className="animate-spin text-cyan-400" size={40}/></div> : (
+                                error ? <div className="flex-1 flex items-center justify-center text-red-400 flex-col gap-2 h-full"><p>{error}</p><button onClick={loadData} className="px-3 py-1 bg-slate-800 rounded text-xs hover:bg-slate-700">Retry</button></div> :
+                                <div className="w-full h-full">
+                                    <TradingChart data={fullData} showSMA={showSMA} showEMA={showEMA} showBB={showBB} />
+                                    <div className="absolute top-4 right-4 z-20"><button onClick={()=>window.takeScreenshot?.()} className="p-2 bg-[#131c31] hover:bg-slate-700 rounded border border-slate-600 text-slate-300" title="Save Image"><Icons.Download size={16}/></button></div>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Chat Area: Bottom Row (Scrollable) */}
+                        <div className="ai-area bg-[#0b1221]">
+                            <div className="flex justify-between p-3 border-b border-slate-800 bg-[#131c31]/50 flex-shrink-0">
+                                <div className="flex gap-2 items-center"><Icons.Brain size={16} className="text-purple-400"/><div className="flex bg-slate-800 rounded p-0.5"><button onClick={()=>setAiModel('gemini')} className={`px-2 py-0.5 text-[10px] rounded ${aiModel==='gemini'?'bg-purple-600 text-white':'text-slate-400'}`}>Gemini</button><button onClick={()=>setAiModel('deepseek')} className={`px-2 py-0.5 text-[10px] rounded ${aiModel==='deepseek'?'bg-blue-600 text-white':'text-slate-400'}`}>DeepSeek</button></div></div>
+                                <div className="flex gap-2"><button onClick={clearChat} className="text-slate-500 hover:text-red-400"><Icons.Trash2 size={16}/></button><button onClick={generateStrategy} disabled={isChatting} className="px-4 py-1 bg-gradient-to-r from-blue-600 to-cyan-600 rounded text-white text-xs font-bold">{isChatting?'分析中...':'生成策略'}</button></div>
+                            </div>
+                            <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
+                                {messages.length === 0 && <div className="flex flex-col items-center justify-center h-full text-slate-600 space-y-2 opacity-50"><Icons.Brain size={32}/><p className="text-xs">点击"生成策略"开始分析，之后可自由提问</p></div>}
+                                {messages.map((m, i) => (<div key={i} className={`p-3 max-w-[90%] text-sm leading-relaxed whitespace-pre-wrap shadow-md ${m.role==='user'?'bg-[#2563eb] text-white rounded-l-xl rounded-tr-xl ml-auto':'bg-[#1e293b] text-[#e2e8f0] rounded-r-xl rounded-tl-xl border border-slate-700'}`}>{m.content}</div>))}
+                                <div ref={chatEndRef} />
+                            </div>
+                            <div className="p-2 border-t border-slate-800 bg-[#131c31] flex gap-2 flex-shrink-0">
+                                <input className="flex-1 bg-[#0b1221] border border-slate-700 rounded px-3 py-2 text-sm text-white outline-none focus:border-cyan-500" placeholder="输入追问内容..." value={userInput} onChange={e=>setUserInput(e.target.value)} onKeyDown={handleKeyDown} />
+                                <button onClick={handleSend} disabled={isChatting} className="p-2 bg-slate-700 hover:bg-slate-600 text-white rounded"><Icons.Send size={16} /></button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<QuantPlatform />);
+    </script>
+</body>
+</html>
